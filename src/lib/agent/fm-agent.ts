@@ -28,11 +28,13 @@ import { contentBlocksToText } from "./prompt-text.ts";
 export class FmAgent {
   readonly #fm: Pick<FmServer, "chat">;
   readonly #emit: SessionUpdateSink;
+  readonly #instructions: string | undefined;
   readonly #sessions = new Map<string, Session>();
 
-  constructor(fm: Pick<FmServer, "chat">, emit: SessionUpdateSink) {
+  constructor(fm: Pick<FmServer, "chat">, emit: SessionUpdateSink, instructions?: string) {
     this.#fm = fm;
     this.#emit = emit;
+    this.#instructions = instructions;
   }
 
   readonly handlers: JsonRpcHandlers = {
@@ -86,7 +88,7 @@ export class FmAgent {
     session.abort = abort;
 
     const messages: ChatMessage[] = [
-      { role: "system", content: AGENT_CONFIG.instructions },
+      ...(this.#instructions ? [{ role: "system" as const, content: this.#instructions }] : []),
       ...trimHistory(session.history, AGENT_CONFIG.historyCharBudget),
     ];
 

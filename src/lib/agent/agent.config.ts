@@ -2,9 +2,8 @@ export const AGENT_CONFIG = {
   sessionIdPrefix: "sess_",
   /** The on-device model has a small context window; keep a rough character budget for history. */
   historyCharBudget: 8_000,
-  instructions:
-    "You are a helpful assistant running on-device via Apple Foundation Models inside a code editor. " +
-    "You cannot read files, run commands, or browse; answer from the conversation alone. Be concise.",
+  /** Optional env var: custom system instructions. Unset means the model's own defaults, like `fm chat`. */
+  instructionsEnvVar: "APPLE_FM_ACP_INSTRUCTIONS",
 } as const;
 
 /** Tags clients commonly use to wrap the user's actual message inside injected scaffolding. */
