@@ -1,22 +1,37 @@
 import type { ContentBlock } from "../acp/acp.schemas.ts";
-import { AGENT_TEXT, CLIENT_SCAFFOLD_TAGS, USER_REQUEST_TAG } from "./agent.config.ts";
+import { AGENT_TEXT, REQUEST_TAGS } from "./agent.config.ts";
 
-const tagPattern = (tag: string): RegExp => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+const requestPattern = new RegExp(`<(${REQUEST_TAGS.join("|")})>([\\s\\S]*?)</\\1>`);
 
-/** Unwrap `<user_request>` and drop client scaffolding blocks. */
+/** A top-level block whose tag is snake_case or kebab-case, e.g. `<runtime_info>…</runtime_info>`. */
+const scaffoldBlockPattern = /^[ \t]*<([a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)>[\s\S]*?<\/\1>[ \t]*$/gm;
+
+/**
+ * Reduce one block to the user's own words: use the request-tag contents when present,
+ * otherwise drop injected scaffolding blocks. Client-agnostic by design.
+ */
 export const stripClientScaffold = (text: string): string => {
-  let result = text.replace(tagPattern(USER_REQUEST_TAG), "$1");
-  for (const tag of CLIENT_SCAFFOLD_TAGS) result = result.replace(tagPattern(tag), "");
-  return result.trim();
+  const request = requestPattern.exec(text);
+  if (request?.[2] !== undefined) return request[2].trim();
+  return text.replace(scaffoldBlockPattern, "").trim();
+};
+
+/** Strip scaffolding from user text, but never reduce a prompt to nothing. */
+const userText = (blocks: ContentBlock[]): string => {
+  const texts = blocks.flatMap((block) => (block.type === "text" ? [block.text] : []));
+  const stripped = texts.map(stripClientScaffold).filter((text) => text !== "");
+  return (stripped.length > 0 ? stripped : texts).join("\n\n");
 };
 
 /** Flatten ACP content blocks into the plain text the model sees. */
-export const contentBlocksToText = (blocks: ContentBlock[]): string =>
-  blocks
-    .map((block) => {
+export const contentBlocksToText = (blocks: ContentBlock[]): string => {
+  const text = userText(blocks);
+  return [
+    text,
+    ...blocks.map((block) => {
       switch (block.type) {
         case "text":
-          return block.text;
+          return "";
         case "resource_link":
           return AGENT_TEXT.resourceLink(block.uri);
         case "resource":
@@ -28,7 +43,8 @@ export const contentBlocksToText = (blocks: ContentBlock[]): string =>
         case "audio":
           return AGENT_TEXT.unsupportedAudio;
       }
-    })
-    .map(stripClientScaffold)
-    .filter((text) => text !== "")
+    }),
+  ]
+    .filter((part) => part !== "")
     .join("\n\n");
+};

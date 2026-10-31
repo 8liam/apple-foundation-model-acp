@@ -7,9 +7,8 @@ export const AGENT_CONFIG = {
     "You cannot read files, run commands, or browse; answer from the conversation alone. Be concise.",
 } as const;
 
-/** Client-injected scaffolding meant for tool-using agents; it only confuses the small on-device model. */
-export const CLIENT_SCAFFOLD_TAGS = ["t3_code_instructions", "runtime_info", "pull_request_linking"] as const;
-export const USER_REQUEST_TAG = "user_request";
+/** Tags clients commonly use to wrap the user's actual message inside injected scaffolding. */
+export const REQUEST_TAGS = ["user_request", "user_message", "user_query", "user_prompt", "request", "query"] as const;
 
 export const AGENT_TEXT = {
   resourceLink: (uri: string) => `[Linked resource: ${uri}]`,

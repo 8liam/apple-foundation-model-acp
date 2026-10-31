@@ -20,3 +20,12 @@ test("drops scaffold-only blocks", () => {
 test("leaves ordinary text untouched", () => {
   assert.equal(stripClientScaffold("plain <b>text</b>"), "plain <b>text</b>");
 });
+
+test("drops arbitrary snake/kebab-case scaffolding blocks without a request tag", () => {
+  const text = "<some_client_rules>\nbe nice\n</some_client_rules>\n\nwhat is 2+2?\n\n<extra-context>\nignore\n</extra-context>";
+  assert.equal(stripClientScaffold(text), "what is 2+2?");
+});
+
+test("keeps the user's text when it is itself only a tagged block", () => {
+  assert.equal(contentBlocksToText([{ type: "text", text: "<note_to_self>remember</note_to_self>" }]), "<note_to_self>remember</note_to_self>");
+});
