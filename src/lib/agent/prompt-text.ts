@@ -1,5 +1,14 @@
 import type { ContentBlock } from "../acp/acp.schemas.ts";
-import { AGENT_TEXT } from "./agent.config.ts";
+import { AGENT_TEXT, CLIENT_SCAFFOLD_TAGS, USER_REQUEST_TAG } from "./agent.config.ts";
+
+const tagPattern = (tag: string): RegExp => new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+
+/** Unwrap `<user_request>` and drop client scaffolding blocks. */
+export const stripClientScaffold = (text: string): string => {
+  let result = text.replace(tagPattern(USER_REQUEST_TAG), "$1");
+  for (const tag of CLIENT_SCAFFOLD_TAGS) result = result.replace(tagPattern(tag), "");
+  return result.trim();
+};
 
 /** Flatten ACP content blocks into the plain text the model sees. */
 export const contentBlocksToText = (blocks: ContentBlock[]): string =>
@@ -20,4 +29,6 @@ export const contentBlocksToText = (blocks: ContentBlock[]): string =>
           return AGENT_TEXT.unsupportedAudio;
       }
     })
+    .map(stripClientScaffold)
+    .filter((text) => text !== "")
     .join("\n\n");
