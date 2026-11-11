@@ -2,6 +2,8 @@ import type { ChatMessage } from "../fm/fm.types.ts";
 
 export type Session = {
   id: string;
+  tools: import("../tools/tools.types.ts").Tool[];
+  close: () => Promise<void>;
   /** User/assistant turns only; the system instructions are prepended per request. */
   history: ChatMessage[];
   /** Set while a prompt turn is running. */

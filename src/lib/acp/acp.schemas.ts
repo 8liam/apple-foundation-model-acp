@@ -11,9 +11,18 @@ export const contentBlockSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("audio") }).passthrough(),
 ]);
 
-export const initializeParamsSchema = z.object({ protocolVersion: z.number().int() }).passthrough();
+export const clientCapabilitiesSchema = z.object({
+  fs: z.object({ readTextFile: z.boolean().optional(), writeTextFile: z.boolean().optional() }).passthrough().optional(),
+  terminal: z.boolean().optional(),
+}).passthrough();
+export const initializeParamsSchema = z.object({ protocolVersion: z.number().int(), clientCapabilities: clientCapabilitiesSchema.optional() }).passthrough();
+const pairsSchema = z.array(z.object({ name: z.string(), value: z.string() }));
+export const mcpServerSchema = z.union([
+  z.object({ name: z.string(), command: z.string(), args: z.array(z.string()).default([]), env: pairsSchema.default([]) }),
+  z.object({ type: z.enum(["http", "sse"]), name: z.string(), url: z.url(), headers: pairsSchema.default([]) }),
+]);
 
-export const newSessionParamsSchema = z.object({ cwd: z.string() }).passthrough();
+export const newSessionParamsSchema = z.object({ cwd: z.string(), mcpServers: z.array(mcpServerSchema).default([]) }).passthrough();
 
 export const promptParamsSchema = z.object({
   sessionId: z.string(),

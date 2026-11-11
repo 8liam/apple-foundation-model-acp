@@ -7,8 +7,7 @@ import { JsonRpcConnection } from "./lib/jsonrpc/jsonrpc.connection.ts";
 
 const fm = await FmServer.start();
 const shutdown = (): void => {
-  fm.stop();
-  process.exit(0);
+  void agent.close().finally(() => { fm.stop(); process.exit(0); });
 };
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
@@ -20,5 +19,6 @@ const agent = new FmAgent(
   (sessionId, update) =>
     connection.notify(ACP_METHODS.sessionUpdate, { sessionId, update }),
   process.env[AGENT_CONFIG.instructionsEnvVar]?.trim() || undefined,
+  (method, params) => connection.request(method, params),
 );
 const connection = new JsonRpcConnection(process.stdin, process.stdout, agent.handlers);
