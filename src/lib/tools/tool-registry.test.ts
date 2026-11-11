@@ -23,7 +23,7 @@ test("terminal cancellation kills and releases", async () => {
     if (method === "terminal/create") return { terminalId: "t" };
     if (method === "terminal/wait_for_exit") { abort.abort(); return new Promise(() => {}); }
     return null;
-  })[0];
+  }).find((tool) => tool.name === "run_command");
   assert.ok(tool);
   await assert.rejects(tool.run({ command: "sleep", args: ["10"] }, abort.signal));
   assert.deepEqual(seen, ["terminal/create", "terminal/wait_for_exit", "terminal/kill", "terminal/release"]);
@@ -40,7 +40,7 @@ test("terminal timeout kills and releases", async () => {
       if (method === "terminal/create") return { terminalId: "t" };
       if (method === "terminal/wait_for_exit") return new Promise(() => {});
       return null;
-    })[0];
+    }).find((tool) => tool.name === "run_command");
     assert.ok(tool);
     await assert.rejects(tool.run({ command: "hang" }, new AbortController().signal), /timeout/i);
     assert.deepEqual(seen, ["terminal/create", "terminal/wait_for_exit", "terminal/kill", "terminal/release"]);

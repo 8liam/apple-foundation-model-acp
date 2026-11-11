@@ -1,7 +1,8 @@
+import { localRead, localWrite, localList, localSearch, localCommand } from "./local-tools.ts";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { TOOL_CONFIG, TOOL_LABELS, positiveConfig } from "./tools.config.ts";
-import type { ClientCapabilities, ClientRequest, Tool } from "./tools.types.ts";
+import type { ClientCapabilities, ClientRequest, ReadOptions, Tool } from "./tools.types.ts";
 
 export const abortable = async <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
   signal.throwIfAborted();
@@ -18,9 +19,10 @@ export const builtinTools = (sessionId: string, cwd: string, caps: ClientCapabil
   const tools: Tool[] = [];
   const rpc = (method: string, params: Record<string, unknown>, signal: AbortSignal) =>
     abortable(request(method, { sessionId, ...params }), AbortSignal.any([signal, AbortSignal.timeout(TOOL_CONFIG.requestTimeoutMs)]));
-  const read = async (path: string, signal: AbortSignal, options = {}) => z.object({ content: z.string() }).parse(
-    await rpc(TOOL_CONFIG.read, { path: resolve(cwd, path), ...options }, signal)).content;
+  const read = async (path: string, signal: AbortSignal, options: ReadOptions = {}) => caps.fs?.readTextFile ? z.object({ content: z.string() }).parse(
+    await rpc(TOOL_CONFIG.read, { path: resolve(cwd, path), ...options }, signal)).content : localRead(cwd, path, signal, options.line, options.limit);
   const write = async (path: string, content: string, signal: AbortSignal) => {
+    if (!caps.fs?.writeTextFile) return localWrite(cwd, path, content, signal);
     await rpc(TOOL_CONFIG.write, { path: resolve(cwd, path), content }, signal);
     return content;
   };
@@ -30,18 +32,19 @@ export const builtinTools = (sessionId: string, cwd: string, caps: ClientCapabil
       schema: z.toJSONSchema(schema), validate: (value) => schema.parse(value),
       run: (args, signal) => run(schema.parse(args), signal) });
   };
-  if (caps.fs?.readTextFile) add("read_file", "read", true, z.object({ path: z.string(), line: z.number().int().positive().optional(), limit: z.number().int().positive().optional() }),
+  add("read_file", "read", true, z.object({ path: z.string(), line: z.number().int().positive().optional(), limit: z.number().int().positive().optional() }),
     ({ path, line, limit }, signal) => read(path, signal, { ...(line === undefined ? {} : { line }), ...(limit === undefined ? {} : { limit }) }));
-  if (caps.fs?.writeTextFile) add("write_file", "edit", false, z.object({ path: z.string(), content: z.string() }),
+  add("write_file", "edit", false, z.object({ path: z.string(), content: z.string() }),
     ({ path, content }, signal) => write(path, content, signal));
-  if (caps.fs?.readTextFile && caps.fs.writeTextFile) add("edit_file", "edit", false,
+  add("edit_file", "edit", false,
     z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }), async ({ path, old_text, new_text }, signal) => {
       const content = await read(path, signal);
       if (content.split(old_text).length !== 2) throw new Error(TOOL_CONFIG.ambiguous);
       return write(path, content.replace(old_text, () => new_text), signal);
     });
-  if (caps.terminal) add("run_command", "execute", false,
-    z.object({ command: z.string(), args: z.array(z.string()).optional(), cwd: z.string().optional() }), async (args, signal) => {
+  add("run_command", "execute", false,
+    z.strictObject({ command: z.string(), args: z.array(z.string()).optional(), cwd: z.string().optional() }), async (args, signal) => {
+      if (!caps.terminal) return localCommand(cwd, args.command, args.args ?? [], args.cwd, signal);
       const timed = AbortSignal.any([signal, AbortSignal.timeout(positiveConfig(TOOL_CONFIG.commandTimeoutEnv, TOOL_CONFIG.commandTimeoutMs))]);
       // If cancellation wins during creation, release the eventual terminal too.
       const creation = request(TOOL_CONFIG.create, { sessionId, ...args, cwd: resolve(cwd, args.cwd ?? cwd), outputByteLimit: TOOL_CONFIG.outputBytes });
@@ -62,5 +65,9 @@ export const builtinTools = (sessionId: string, cwd: string, caps: ClientCapabil
         return JSON.stringify({ ...output, exit });
       } finally { await cleanup(terminalId); }
     });
+  add("list_directory", "read", true, z.object({ path: z.string().default(".") }),
+    ({ path }, signal) => localList(cwd, path, signal));
+  add("search_files", "read", true, z.object({ query: z.string().min(1), path: z.string().default(".") }),
+    ({ path, query }, signal) => localSearch(cwd, path, query, signal));
   return tools;
 };

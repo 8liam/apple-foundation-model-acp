@@ -9,3 +9,5 @@ export type Tool = {
   run: (args: Record<string, unknown>, signal: AbortSignal) => Promise<string>;
 };
 export type ClientCapabilities = z.infer<typeof clientCapabilitiesSchema>;
+
+export type ReadOptions = { line?: number; limit?: number };
