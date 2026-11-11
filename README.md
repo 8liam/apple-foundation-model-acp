@@ -35,15 +35,31 @@ Zed (`settings.json`):
 
 `initialize`, `session/new`, `session/prompt` (streamed `agent_message_chunk`), `session/cancel`. Text, resource links and embedded text resources are accepted as prompt content.
 
-Coding tools are available when the ACP client advertises the corresponding capabilities:
+Six core coding tools are always listed first. The schemas and descriptions are shared across backends:
 
-- `read_file(path, line?, limit?)` uses client file reads.
-- `write_file(path, content)` and `edit_file(path, old_text, new_text)` use client writes. Edits require exactly one matching occurrence.
-- `run_command(command, args?, cwd?)` uses client terminals, waits for exit, collects output, and kills/releases the terminal on cancellation or timeout.
+- `read_file(path, line?, limit?)` reads text (line numbers start at 1).
+- `write_file(path, content)` creates or overwrites a file.
+- `edit_file(path, old_text, new_text)` replaces exactly one matching occurrence.
+- `run_command(command, args?, cwd?)` runs an executable with an argument array and collects output.
+- `list_directory(path?)` lists up to 500 entries (default: session cwd).
+- `search_files(query, path?)` searches literal text recursively, returning file:line matches. It skips symlinks, binary/oversized files, `node_modules` and `.git`; traversal stops at 2,000 entries or 100 matches. Each directory contributes at most 500 entries. Lines are capped at 300 characters.
 
-Relative paths resolve against the session cwd. The agent process never reads or writes project files directly. Writes, edits, commands, and MCP tools without `annotations.readOnlyHint: true` request ACP permission before execution. Rejected/cancelled permission requests become tool observations. Calls and results appear as `tool_call` / `tool_call_update` session updates.
+Reads/writes use ACP fs capabilities independently when advertised; otherwise they use `node:fs`. Commands use ACP terminals when advertised, otherwise `node:child_process`. Listing/search always use local files. **T3 Code advertises fs and terminal as false**, so all six tools use local implementations there, even when the T3 MCP bridge is connected. No T3 settings changes are required.
 
-MCP servers supplied in `session/new.mcpServers` are supported over stdio, Streamable HTTP (with SSE fallback), and SSE. Connections and tool discovery share a 10-second deadline per server; failed servers are logged to stderr and skipped. Remote names become sanitized `<server>__<tool>` names with collision suffixes. Text results are flattened; other content becomes a placeholder. Clients close on process shutdown (ACP v1 has no session-end request). The MCP SDK is pinned to 1.32.1, published October 5, 2026. Stdio integration is tested; HTTP/SSE interoperability has not been tested against a live remote server.
+Local paths resolve against session cwd. File tools and command cwd reject lexical escapes and symlinks leading outside cwd, including dangling symlinks, even after permission approval; outside access through these parameters is intentionally unsupported. Local reads are capped at 1 MB (oversized files fail). These checks are not an OS sandbox: concurrent filesystem changes can race checks, and an approved executable can access files/network outside cwd. Commands require permission, run with inherited environment and ignored stdin, and never implicitly invoke a shell. Shell syntax is passed literally as arguments; explicitly invoking a shell executable still requires command permission. Output is capped at 32,000 bytes across stdout/stderr (excess discarded); timeout/cancellation kills the local process group. Detached descendants that escape the process group are outside that guarantee.
+
+Writes, edits, commands, and MCP tools without `annotations.readOnlyHint: true` request ACP permission before execution. T3 auto-accept mode can approve these requests. Rejected/cancelled requests become tool observations. Calls and results appear as `tool_call` / `tool_call_update` session updates.
+
+MCP servers supplied in `session/new.mcpServers` are supported over stdio, Streamable HTTP (with SSE fallback), and SSE. Connections and tool discovery share a 10-second deadline per server; failed servers are logged to stderr and skipped. Remote names become sanitized `<server>__<tool>` names with collision suffixes. Text results are flattened; other content becomes a placeholder. Clients close on process shutdown (ACP v1 has no session-end request). Discovery is filtered before the catalogue character budget is applied. By default only `html_preview` and `html_render` are exposed; preview/device/management families and all other remote tools are excluded. This keeps the small model focused on coding tools.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APPLE_FM_ACP_MCP_ALLOW` | `html_preview,html_render,*__html_preview,*__html_render` | Comma-separated allow globs; setting replaces default allows and default family denies |
+| `APPLE_FM_ACP_MCP_DENY` | `preview_*,device_*,t3_*,*__preview_*,*__device_*,*__t3_*` | Comma-separated deny globs; setting replaces default denies; deny wins |
+
+Globs are case-sensitive, with only `*` acting as a wildcard. Explicit policies match the original remote name or sanitized `server__tool` name; default family denies match the remote name so the `t3_code` server prefix does not exclude its presentation tools. Empty allow hides all MCP tools; `APPLE_FM_ACP_MCP_ALLOW=*` opts into all tools. For example, `APPLE_FM_ACP_MCP_ALLOW='html_*,t3_code__preview_*' APPLE_FM_ACP_MCP_DENY='*__preview_close'` opts into selected browser tools. These knobs curate the model's choices; they are not a security sandbox.
+
+The MCP SDK is pinned to 1.32.1, published October 5, 2026. Stdio integration is tested; HTTP/SSE interoperability has not been tested against a live remote server.
 
 Not supported: `session/load`, images/audio.
 
@@ -78,4 +94,6 @@ npm test   # includes the original chat end-to-end test; needs working fm
 APPLE_FM_ACP_TOOL_E2E=1 node --test src/tool-turn.e2e.test.ts
 ```
 
-The optional real-model tool test is skipped by default because model decisions vary. It passed locally: for “Read package.json and tell me the name”, the model called `read_file` with the absolute package path, received fake ACP file content, and streamed “The name is apple-fm-acp.” Unit tests use scripted model responses and fake ACP clients; the MCP fixture uses a real SDK stdio server.
+The optional real-model tool tests are skipped by default because model decisions vary. The local-backend test runs five trials with a 70-tool MCP-style catalogue filtered by the production policy; each trial must read package.json and answer with the name. Trial diagnostics and the pass count expose failures; opting in can fail the suite.
+
+Local verification on November 11, 2026: the default suite passed (34 passed, 2 optional tests skipped), and typecheck passed. With `APPLE_FM_ACP_TOOL_E2E=1`, the ACP-backed single-turn test passed; the local five-trial test scored **1/5 clean answers**, despite successfully reading package.json in **5/5** trials. The other trials made extra reads of the package name as a path, then refused or gave contradictory answers after ENOENT. The opt-in suite therefore failed its five-success assertion. Catalogue filtering fixes tool availability and reduces distractors, but does not make this model a reliable coding agent.
