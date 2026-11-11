@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { abortable } from "../tools/tool-registry.ts";
+import { mcpToolAllowed } from "./mcp-policy.ts";
 import { MCP_CONFIG } from "./mcp.config.ts";
 import type { McpServer, McpTools } from "./mcp.types.ts";
 
@@ -61,11 +62,13 @@ export const connectMcpTools = async (servers: McpServer[], cwd: string): Promis
   for (const group of groups) {
     if (!group) continue;
     for (const remote of group.listed) {
+      const name = namespaceTool(group.server.name, remote.name, used);
+      if (!mcpToolAllowed(remote.name, name)) continue;
       const ajv = new Ajv({ strict: false, validateFormats: false });
       let validate: ReturnType<typeof ajv.compile>;
       try { validate = ajv.compile(remote.inputSchema); }
       catch (error) { console.error(MCP_CONFIG.failed, remote.name, error); continue; }
-      tools.push({ name: namespaceTool(group.server.name, remote.name, used), description: remote.description ?? remote.name,
+      tools.push({ name, description: remote.description ?? remote.name,
         kind: "other", readOnly: remote.annotations?.readOnlyHint === true, schema: remote.inputSchema,
         validate: (value) => {
           const args = z.record(z.string(), z.unknown()).parse(value);

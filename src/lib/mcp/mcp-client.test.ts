@@ -9,6 +9,8 @@ test("namespaces are sanitized, bounded and collision safe", () => {
   assert.ok(namespaceTool("x".repeat(200), "y".repeat(200), used).length < 64);
 });
 test("real stdio SDK connection lists, validates, calls and closes", { timeout: 15000 }, async () => {
+  const previous = process.env.APPLE_FM_ACP_MCP_ALLOW;
+  process.env.APPLE_FM_ACP_MCP_ALLOW = "fixture__echo_tool";
   const connected = await connectMcpTools([{ name: "Fixture", command: process.execPath, args: ["src/lib/mcp/fixtures/server.ts"], env: [] }], process.cwd());
   try {
     const tool = connected.tools[0];
@@ -17,5 +19,8 @@ test("real stdio SDK connection lists, validates, calls and closes", { timeout: 
     assert.equal(tool.readOnly, true);
     assert.throws(() => tool.validate({ text: 1 }));
     assert.equal(await tool.run(tool.validate({ text: "hello" }), new AbortController().signal), "hello");
-  } finally { await connected.close(); }
+  } finally { await connected.close();
+    if (previous === undefined) delete process.env.APPLE_FM_ACP_MCP_ALLOW;
+    else process.env.APPLE_FM_ACP_MCP_ALLOW = previous;
+  }
 });
