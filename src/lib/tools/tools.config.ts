@@ -1,4 +1,5 @@
 export const TOOL_CONFIG = {
+  cleanupTimeoutMs: 2000,
   iterations: 8, catalogueChars: 2400, resultChars: 1500, commandTimeoutMs: 60_000,
   requestTimeoutMs: 90_000, outputBytes: 32_000, descriptionChars: 60,
   iterationsEnv: "APPLE_FM_ACP_MAX_ITERATIONS", catalogueEnv: "APPLE_FM_ACP_CATALOGUE_CHARS",
@@ -8,6 +9,7 @@ export const TOOL_CONFIG = {
   args: "Return the arguments for this tool: ", final: "Answer the user using the tool results. If tools failed, explain honestly.",
   cap: "Tool iteration limit reached. Explain what was completed and what remains.",
   fallback: "Return arguments as a JSON object encoded in the json string field.",
+  reply: "reply", callMarker: "[tool call]", resultMarker: "[tool result]", errorMarker: "[tool error]",
   permission: "session/request_permission", allow: "allow_once", reject: "reject_once",
   allowName: "Allow once", rejectName: "Reject once", timeout: "Tool request timed out",
   read: "fs/read_text_file", write: "fs/write_text_file", create: "terminal/create",

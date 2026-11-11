@@ -46,7 +46,7 @@ export const builtinTools = (sessionId: string, cwd: string, caps: ClientCapabil
       // If cancellation wins during creation, release the eventual terminal too.
       const creation = request(TOOL_CONFIG.create, { sessionId, ...args, cwd: resolve(cwd, args.cwd ?? cwd), outputByteLimit: TOOL_CONFIG.outputBytes });
       const cleanup = async (terminalId: string) => {
-        const cleanupSignal = AbortSignal.timeout(TOOL_CONFIG.requestTimeoutMs);
+        const cleanupSignal = AbortSignal.timeout(TOOL_CONFIG.cleanupTimeoutMs);
         await rpc(TOOL_CONFIG.kill, { terminalId }, cleanupSignal).catch(() => {});
         await rpc(TOOL_CONFIG.release, { terminalId }, cleanupSignal).catch(() => {});
       };

@@ -18,7 +18,7 @@ export const sanitizeSchema = (input: unknown): Record<string, unknown> => {
     if (node.type === "object" || node.properties) {
       out.type = "object";
       out.properties = Object.fromEntries(Object.entries(recordSchema.parse(node.properties ?? {})).map(([key, schema]) => [key, visit(schema, refs)]));
-      // fm rejects bare objects and boolean additionalProperties on this build.
+      // Explicit properties avoids the bare-object decoding failure in fm.
     }
     if (node.items) out.items = visit(node.items, refs);
     if (Object.keys(out).length === 0) out.type = "string";

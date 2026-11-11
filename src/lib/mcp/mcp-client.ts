@@ -30,7 +30,11 @@ export const connectMcpTools = async (servers: McpServer[], cwd: string): Promis
       const client = new Client(MCP_CONFIG.client);
       const transport = "command" in server
         ? new StdioClientTransport({ command: server.command, args: server.args, env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...Object.fromEntries(server.env.map(({ name, value }) => [name, value])) }, cwd, stderr: "inherit" })
-        : sse ? new SSEClientTransport(new URL(server.url), { requestInit: { headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) }, eventSourceInit: { fetch: (url, init) => fetch(url, { ...init, headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) }) } })
+        : sse ? new SSEClientTransport(new URL(server.url), { requestInit: { headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) }, eventSourceInit: { fetch: (url, init) => {
+          const headers = new Headers(init?.headers);
+          for (const pair of server.headers) headers.set(pair.name, pair.value);
+          return fetch(url, { ...init, headers });
+        } } })
         : new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: Object.fromEntries(server.headers.map(({ name, value }) => [name, value])) } });
       try { await abortable(client.connect(transport), signal); return client; }
       catch (error) { await client.close().catch(() => {}); throw error; }

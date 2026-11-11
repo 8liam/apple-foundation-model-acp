@@ -34,15 +34,15 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
     { role: "system", content: [instructions, system].filter(Boolean).join("\n") },
     ...trimHistory(working, AGENT_CONFIG.historyCharBudget),
   ];
-  const decideSchema = { type: "object", properties: { action: { type: "string", enum: ["reply", ...available.map((tool) => tool.name)] } }, required: ["action"] };
+  const decideSchema = { type: "object", properties: { action: { type: "string", enum: [TOOL_CONFIG.reply, ...available.map((tool) => tool.name)] } }, required: ["action"] };
   const cap = positiveConfig(TOOL_CONFIG.iterationsEnv, TOOL_CONFIG.iterations);
   for (let i = 0; i < cap; i++) {
     signal.throwIfAborted();
-    let name = "reply";
+    let name: string = TOOL_CONFIG.reply;
     try {
-      name = z.object({ action: z.enum(["reply", ...available.map((tool) => tool.name)]) }).parse(
+      name = z.object({ action: z.enum([TOOL_CONFIG.reply, ...available.map((tool) => tool.name)]) }).parse(
         await fm.complete(messages(TOOL_CONFIG.decide + catalogue), decideSchema, signal)).action;
-      if (name === "reply") return messages(TOOL_CONFIG.final);
+      if (name === TOOL_CONFIG.reply) return messages(TOOL_CONFIG.final);
       const tool = available.find((candidate) => candidate.name === name);
       if (!tool) continue;
       const argsPrompt = TOOL_CONFIG.args + tool.name + "\n" + tool.description;
@@ -72,17 +72,16 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
           if (permission.outcome.outcome !== "selected" || permission.outcome.optionId !== TOOL_CONFIG.allow) throw new Error(TOOL_CONFIG.rejected);
         }
         signal.throwIfAborted();
-        // A second tool_call with the same id is unnecessary; pending remains until completion.
         output = await tool.run(args, signal);
       } catch (error) { status = "failed"; output = String(error); }
       emit(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status,
         content: [{ type: "content", content: { type: "text", text: truncateResult(output) } }], rawOutput: output });
       signal.throwIfAborted();
-      working.push({ role: "assistant", content: `[tool call] ${name} ${JSON.stringify(args)}` },
-        { role: "user", content: `[tool result] ${name}\n${truncateResult(output)}` });
+      working.push({ role: "assistant", content: `${TOOL_CONFIG.callMarker} ${name} ${JSON.stringify(args)}` },
+        { role: "user", content: `${TOOL_CONFIG.resultMarker} ${name}\n${truncateResult(output)}` });
     } catch (error) {
       signal.throwIfAborted();
-      working.push({ role: "user", content: `[tool error] ${name}\n${truncateResult(String(error))}` });
+      working.push({ role: "user", content: `${TOOL_CONFIG.errorMarker} ${name}\n${truncateResult(String(error))}` });
     }
   }
   return messages(TOOL_CONFIG.final + "\n" + TOOL_CONFIG.cap);

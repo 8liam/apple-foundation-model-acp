@@ -149,11 +149,3 @@ const parse = <S extends z.ZodType>(method: string, schema: S, params: unknown):
   }
   return result.data;
 };
-
-export const sessionUpdateParams = (sessionId: string, text: string) => ({
-  sessionId,
-  update: {
-    sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk,
-    content: { type: "text", text },
-  },
-});
