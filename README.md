@@ -65,7 +65,7 @@ Not supported: `session/load`, images/audio.
 
 ## Tool loop and limits
 
-`fm serve` ignores OpenAI's `tools` field. Instead, each tool step uses two non-streaming constrained JSON calls: first choose `reply` or a tool name, then generate that tool's arguments. Arguments are validated before execution. Results go into temporary user/assistant messages, and the final answer streams normally. Only the user prompt and final answer persist between turns. Sessions without tools keep the original plain streaming chat path.
+`fm serve` ignores OpenAI's `tools` field. Instead, each tool step uses two non-streaming constrained JSON calls: first choose `reply` or a tool name, then generate that tool's arguments. Arguments are validated before execution. After a successful result, a constrained yes/no check defaults to answering; another tool decision is allowed only when the model says information is missing. Identical calls (canonical arguments and normalized built-in paths) stop before execution. A failed execution or invalid decision/arguments permits at most one further attempt. Results go into temporary messages; file contents are truncated and fenced under their path. The streamed final reply receives compact observations and the original request last, with instructions to retain successful evidence and identify failed attempts. Only the user prompt and final answer persist between turns. Sessions without tools keep the original plain streaming chat path.
 
 The roughly 3B model has about a 4k-token context and can choose the wrong tool, invent arguments, repeat calls, or answer early. This is a bounded coding assistant, with no guarantee of completing complex coding tasks. History uses an 8,000-character budget. Core tools precede MCP tools in the catalogue; descriptions are capped at 60 characters, entries degrade to names only, and trailing entries are omitted when the budget is exhausted. Omitted tools cannot be selected that turn. Tool observations are truncated and marked; large inputs and schemas can still exhaust context.
 
@@ -94,6 +94,17 @@ npm test   # includes the original chat end-to-end test; needs working fm
 APPLE_FM_ACP_TOOL_E2E=1 node --test src/tool-turn.e2e.test.ts
 ```
 
-The optional real-model tool tests are skipped by default because model decisions vary. The local-backend test runs five trials with a 70-tool MCP-style catalogue filtered by the production policy; each trial must read package.json and answer with the name. Trial diagnostics and the pass count expose failures; opting in can fail the suite.
+The optional real-model tool tests are skipped by default because model decisions vary. The local-backend benchmark runs ten trials each for package reads, folder listing, code search, and conversation, cycling three phrasings per scenario. It uses 70 MCP-style distractors filtered by production policy (two presentation tools survive). Diagnostics include every prompt, executed call, reply, error, and score. Each tool scenario requires successful local evidence and the expected answer; conversation requires a nonempty reply without tool execution. Opting in can fail the suite.
 
-Local verification on November 11, 2026: the default suite passed (34 passed, 2 optional tests skipped), and typecheck passed. With `APPLE_FM_ACP_TOOL_E2E=1`, the ACP-backed single-turn test passed; the local five-trial test scored **1/5 clean answers**, despite successfully reading package.json in **5/5** trials. The other trials made extra reads of the package name as a path, then refused or gave contradictory answers after ENOENT. The opt-in suite therefore failed its five-success assertion. Catalogue filtering fixes tool availability and reduces distractors, but does not make this model a reliable coding agent.
+Local verification on November 11, 2026, using real `fm serve` and the LOCAL backend (10 trials per scenario, three phrasings, identical scoring):
+
+| Scenario | Before (`4acf3de`) | After |
+| --- | ---: | ---: |
+| Package name | 4/10 | 10/10 |
+| Folders | 8/10 | 10/10 |
+| Code search | 2/10 | 8/10 |
+| Conversation without tools | 4/10 | 10/10 |
+
+An intermediate gate-only run scored 10/10, 8/10, 3/10, 4/10 respectively; clearer general decision/argument prompts improved initial choices. The final search failures were one 100-second timeout after a successful search and one invented path/answer after failed attempts. The opt-in benchmark therefore still fails its all-trials assertion. Prompt safeguards reduce errors but cannot guarantee truthful answers or successful searches. These small, variable samples are observations, not reliability guarantees.
+
+Typecheck passed; the final default suite passed (39 passed, 2 opt-in tests skipped), and the opt-in ACP file-read test passed. An earlier default run timed out in the real ACP integration test; the unchanged test passed on rerun. Multi-turn conversation can still select unnecessary tools.

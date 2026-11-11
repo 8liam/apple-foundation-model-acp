@@ -1,3 +1,4 @@
+import { normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ChatMessage } from "../fm/fm.types.ts";
@@ -6,7 +7,7 @@ import type { ClientRequest, Tool } from "../tools/tools.types.ts";
 import { TOOL_CONFIG, positiveConfig } from "../tools/tools.config.ts";
 import { abortable } from "../tools/tool-registry.ts";
 import { fallbackSchema, sanitizeSchema } from "../tools/tool-schema.ts";
-import { AGENT_CONFIG } from "./agent.config.ts";
+import { AGENT_CONFIG, LOOP_CONFIG } from "./agent.config.ts";
 import type { SessionUpdateSink } from "./agent.types.ts";
 import { trimHistory } from "./history.ts";
 
@@ -24,10 +25,34 @@ export const toolCatalogue = (tools: Tool[], budget = positiveConfig(TOOL_CONFIG
   return result;
 };
 
+/** Canonical JSON preserves array order and ignores object-key order. */
+const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+  : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+
+const callKey = (name: string, args: Record<string, unknown>): string => {
+  const normalized = { ...args };
+  if (LOOP_CONFIG.pathTools.some((tool) => tool === name)) {
+    for (const key of ["path", "cwd"]) if (typeof normalized[key] === "string") normalized[key] = normalize(normalized[key]);
+    if (name === LOOP_CONFIG.readTool && normalized.line === 1) delete normalized.line;
+  }
+  return JSON.stringify([name, canonical(normalized)]);
+};
+
 /** The loop returns ephemeral tool observations; only the final reply is persisted. */
 export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[], history: ChatMessage[],
   sessionId: string, emit: SessionUpdateSink, request: ClientRequest, signal: AbortSignal, instructions?: string): Promise<ChatMessage[]> => {
   const working = [...history];
+  const original = history.findLast((message) => message.role === "user")?.content ?? "";
+  const observations: ChatMessage[] = [];
+  const seen = new Set<string>();
+  let succeeded = false;
+  let followUps: number | undefined;
+  const failed = () => { followUps ??= LOOP_CONFIG.followUpAttempts; };
+  const finalMessages = (hint = ""): ChatMessage[] => [
+    { role: "system", content: [instructions, observations.length ? LOOP_CONFIG.final : LOOP_CONFIG.conversationFinal, hint].filter(Boolean).join("\n") },
+    ...trimHistory([...history.slice(0, -1), ...observations], AGENT_CONFIG.historyCharBudget),
+    { role: "user", content: original },
+  ];
   const catalogue = toolCatalogue(tools);
   const available = tools.filter((tool) => catalogue.split("\n").some((line) => line === tool.name || line.startsWith(`${tool.name}:`)));
   const messages = (system: string): ChatMessage[] => [
@@ -38,14 +63,21 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
   const cap = positiveConfig(TOOL_CONFIG.iterationsEnv, TOOL_CONFIG.iterations);
   for (let i = 0; i < cap; i++) {
     signal.throwIfAborted();
+    if (followUps === 0) return finalMessages(LOOP_CONFIG.failureBudget);
+    if (followUps !== undefined) followUps--;
     let name: string = TOOL_CONFIG.reply;
     try {
+      if (succeeded) {
+        const answer = z.object({ answer: z.enum([LOOP_CONFIG.yes, LOOP_CONFIG.no]) }).parse(await fm.complete(
+          messages(LOOP_CONFIG.gate), { type: "object", properties: { answer: { type: "string", enum: [LOOP_CONFIG.yes, LOOP_CONFIG.no] } }, required: ["answer"] }, signal));
+        if (answer.answer === LOOP_CONFIG.yes) return finalMessages();
+      }
       name = z.object({ action: z.enum([TOOL_CONFIG.reply, ...available.map((tool) => tool.name)]) }).parse(
-        await fm.complete(messages(TOOL_CONFIG.decide + catalogue), decideSchema, signal)).action;
-      if (name === TOOL_CONFIG.reply) return messages(TOOL_CONFIG.final);
+        await fm.complete(messages((succeeded ? LOOP_CONFIG.afterSuccess : "") + LOOP_CONFIG.decide + catalogue), decideSchema, signal)).action;
+      if (name === TOOL_CONFIG.reply) return finalMessages();
       const tool = available.find((candidate) => candidate.name === name);
       if (!tool) continue;
-      const argsPrompt = TOOL_CONFIG.args + tool.name + "\n" + tool.description;
+      const argsPrompt = LOOP_CONFIG.args + TOOL_CONFIG.args + tool.name + "\n" + tool.description;
       let raw: unknown;
       try { raw = await fm.complete(messages(argsPrompt), sanitizeSchema(tool.schema), signal); }
       catch (error) {
@@ -53,6 +85,9 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
         raw = JSON.parse(z.object({ json: z.string() }).parse(await fm.complete(messages(argsPrompt + "\n" + TOOL_CONFIG.fallback), fallbackSchema, signal)).json) as unknown;
       }
       const args = tool.validate(raw);
+      const key = callKey(name, args);
+      if (seen.has(key)) return finalMessages(LOOP_CONFIG.duplicate);
+      seen.add(key);
       const toolCallId = randomUUID();
       const toolCall = { toolCallId, title: name, kind: tool.kind, status: "pending" as const, rawInput: args };
       emit(sessionId, { sessionUpdate: "tool_call", ...toolCall });
@@ -77,12 +112,21 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
       emit(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status,
         content: [{ type: "content", content: { type: "text", text: truncateResult(output) } }], rawOutput: output });
       signal.throwIfAborted();
+      if (status === "failed") failed();
+      else succeeded = true;
+      const text = truncateResult(output);
+      const fence = "`".repeat(Math.max(3, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length + 1)));
+      const result = name === LOOP_CONFIG.readTool && status === "completed"
+        ? `${String(args.path)}\n${fence}text\n${text}\n${fence}` : text;
+      observations.push({ role: "user", content: `${status === "completed" ? LOOP_CONFIG.successful : LOOP_CONFIG.failed}: ${name} ${JSON.stringify(args)}\n${result}` });
       working.push({ role: "assistant", content: `${TOOL_CONFIG.callMarker} ${name} ${JSON.stringify(args)}` },
-        { role: "user", content: `${TOOL_CONFIG.resultMarker} ${name}\n${truncateResult(output)}` });
+        { role: "user", content: `${TOOL_CONFIG.resultMarker} ${status === "completed" ? LOOP_CONFIG.successful : LOOP_CONFIG.failed}: ${name}\n${result}` });
     } catch (error) {
       signal.throwIfAborted();
+      failed();
+      observations.push({ role: "user", content: `${LOOP_CONFIG.failed}: ${name}\n${truncateResult(String(error))}` });
       working.push({ role: "user", content: `${TOOL_CONFIG.errorMarker} ${name}\n${truncateResult(String(error))}` });
     }
   }
-  return messages(TOOL_CONFIG.final + "\n" + TOOL_CONFIG.cap);
+  return finalMessages(TOOL_CONFIG.cap);
 };
