@@ -7,6 +7,12 @@ import type { JsonRpcHandlers, JsonRpcId, JsonRpcResponse } from "./jsonrpc.type
 
 const idSchema = z.union([z.string(), z.number()]);
 
+const responseSchema = z.object({
+  jsonrpc: z.literal(JSONRPC_VERSION), id: idSchema,
+  result: z.unknown().optional(),
+  error: z.object({ code: z.number(), message: z.string() }).optional(),
+}).refine((value) => "result" in value || "error" in value);
+
 const incomingSchema = z.object({
   jsonrpc: z.literal(JSONRPC_VERSION),
   id: idSchema.optional(),
@@ -20,6 +26,9 @@ const incomingSchema = z.object({
  * `session/cancel` can arrive while a `session/prompt` is still running.
  */
 export class JsonRpcConnection {
+  readonly #pending = new Map<JsonRpcId, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  #nextId = 0;
+  #closed = false;
   readonly #output: Writable;
   readonly #handlers: JsonRpcHandlers;
 
@@ -28,6 +37,25 @@ export class JsonRpcConnection {
     this.#handlers = handlers;
     createInterface({ input, crlfDelay: Infinity }).on("line", (line) => {
       if (line.trim() !== "") void this.#receive(line);
+    }).on("close", () => this.#close());
+    input.on("error", () => this.#close());
+    output.on("error", () => this.#close());
+    output.on("close", () => this.#close());
+  }
+
+  #close(): void {
+    this.#closed = true;
+    for (const pending of this.#pending.values()) pending.reject(new Error(JSONRPC_MESSAGES.closed));
+    this.#pending.clear();
+  }
+
+  request(method: string, params: unknown): Promise<unknown> {
+    if (this.#closed) return Promise.reject(new Error(JSONRPC_MESSAGES.closed));
+    const id = `agent_${++this.#nextId}`;
+    return new Promise((resolve, reject) => {
+      this.#pending.set(id, { resolve, reject });
+      try { this.#write({ jsonrpc: JSONRPC_VERSION, id, method, params }); }
+      catch (error) { this.#pending.delete(id); reject(error); }
     });
   }
 
@@ -44,9 +72,17 @@ export class JsonRpcConnection {
       return;
     }
 
+    const response = responseSchema.safeParse(raw);
+    if (response.success) {
+      const pending = this.#pending.get(response.data.id);
+      this.#pending.delete(response.data.id);
+      if (response.data.error) pending?.reject(new JsonRpcError(response.data.error.code, response.data.error.message));
+      else pending?.resolve(response.data.result);
+      return;
+    }
     const parsed = incomingSchema.safeParse(raw);
     if (!parsed.success) {
-      // Responses to requests we never send (agent->client) are ignored.
+      // Ignore unknown responses.
       if (typeof raw === "object" && raw !== null && !("method" in raw)) return;
       this.#respondError(null, new JsonRpcError(JSONRPC_ERROR.invalidRequest, JSONRPC_MESSAGES.invalidRequest));
       return;

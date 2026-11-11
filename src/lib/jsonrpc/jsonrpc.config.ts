@@ -9,6 +9,7 @@ export const JSONRPC_ERROR = {
 } as const;
 
 export const JSONRPC_MESSAGES = {
+  closed: "JSON-RPC connection closed",
   parseError: "Parse error",
   invalidRequest: "Invalid request",
   methodNotFound: "Method not found",

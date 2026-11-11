@@ -98,7 +98,7 @@ export class FmAgent {
       for await (const event of this.#fm.chat(messages, abort.signal)) {
         if (event.type === "delta") {
           reply += event.text;
-          this.#emit(session.id, event.text);
+          this.#emit(session.id, { sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk, content: { type: "text", text: event.text } });
         } else if (event.type === "finish") {
           if (event.reason === "length") stopReason = ACP_STOP_REASONS.maxTokens;
           if (event.reason === "content_filter") stopReason = ACP_STOP_REASONS.refusal;
