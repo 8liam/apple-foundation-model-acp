@@ -37,5 +37,5 @@ export const AGENT_INFO = {
 export const AGENT_CAPABILITIES = {
   loadSession: false,
   promptCapabilities: { image: false, audio: false, embeddedContext: true },
-  mcpCapabilities: { http: false, sse: false },
+  mcpCapabilities: { http: true, sse: true },
 } as const;

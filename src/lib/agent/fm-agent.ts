@@ -1,3 +1,4 @@
+import { connectMcpTools } from "../mcp/mcp-client.ts";
 import { builtinTools } from "../tools/tool-registry.ts";
 import type { ClientCapabilities, ClientRequest } from "../tools/tools.types.ts";
 import { runToolLoop } from "./agent-loop.ts";
@@ -81,7 +82,8 @@ export class FmAgent {
 
   async #newSession(params: z.infer<typeof newSessionParamsSchema>) {
     const id = `${AGENT_CONFIG.sessionIdPrefix}${randomUUID()}`;
-    this.#sessions.set(id, { id, history: [], abort: null, tools: builtinTools(id, params.cwd, this.#capabilities, this.#request), close: async () => {} });
+    const mcp = await connectMcpTools(params.mcpServers, params.cwd);
+    this.#sessions.set(id, { id, history: [], abort: null, tools: [...builtinTools(id, params.cwd, this.#capabilities, this.#request), ...mcp.tools], close: mcp.close });
     return { sessionId: id };
   }
 
