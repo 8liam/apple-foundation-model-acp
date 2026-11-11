@@ -70,7 +70,7 @@ test("real fm local scenarios with 70 MCP distractors", { skip: process.env[TOOL
         let reply = "";
         let error = "";
         try {
-          const messages = await runToolLoop(fm, [...core, ...remotes], [{ role: "user", content: prompt }],
+          const { messages } = await runToolLoop(fm, [...core, ...remotes], [{ role: "user", content: prompt }],
             "local", () => {}, async () => ({ outcome: { outcome: "selected", optionId: "allow_once" } }), signal);
           for await (const event of fm.chat(messages, signal)) {
             if (event.type === "delta") reply += event.text;

@@ -110,10 +110,15 @@ export class FmAgent {
     let stopReason: StopReason = ACP_STOP_REASONS.endTurn;
     try {
       if (session.tools.length && this.#fm.complete) {
-        messages = await runToolLoop({ complete: this.#fm.complete.bind(this.#fm) }, session.tools, trimHistory(session.history, AGENT_CONFIG.historyCharBudget),
+        const result = await runToolLoop({ complete: this.#fm.complete.bind(this.#fm) }, session.tools, trimHistory(session.history, AGENT_CONFIG.historyCharBudget),
           session.id, this.#emit, this.#request, abort.signal, this.#instructions);
+        messages = result.messages;
+        if (result.reply !== undefined) {
+          reply = result.reply;
+          this.#emit(session.id, { sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk, content: { type: "text", text: reply } });
+        }
       }
-      for await (const event of this.#fm.chat(messages, abort.signal)) {
+      if (!reply) for await (const event of this.#fm.chat(messages, abort.signal)) {
         if (event.type === "delta") {
           reply += event.text;
           this.#emit(session.id, { sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk, content: { type: "text", text: event.text } });

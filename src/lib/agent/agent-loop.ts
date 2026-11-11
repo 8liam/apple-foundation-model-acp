@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ChatMessage } from "../fm/fm.types.ts";
 import type { FmServer } from "../fm/fm-server.ts";
-import type { ClientRequest, Tool } from "../tools/tools.types.ts";
+import type { ClientRequest, Tool, ToolOutcome } from "../tools/tools.types.ts";
 import { TOOL_CONFIG, positiveConfig } from "../tools/tools.config.ts";
+import { actionSummary, commandFailed, isActionTool, toolArgsGuidance } from "../tools/tool-guidance.ts";
 import { abortable } from "../tools/tool-registry.ts";
 import { fallbackSchema, sanitizeSchema } from "../tools/tool-schema.ts";
 import { AGENT_CONFIG, LOOP_CONFIG } from "./agent.config.ts";
-import type { SessionUpdateSink } from "./agent.types.ts";
+import type { SessionUpdateSink, ToolLoopResult } from "./agent.types.ts";
 import { trimHistory } from "./history.ts";
 
 export const truncateResult = (text: string, limit = positiveConfig(TOOL_CONFIG.resultEnv, TOOL_CONFIG.resultChars)): string =>
@@ -40,7 +41,7 @@ const callKey = (name: string, args: Record<string, unknown>): string => {
 
 /** The loop returns ephemeral tool observations; only the final reply is persisted. */
 export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[], history: ChatMessage[],
-  sessionId: string, emit: SessionUpdateSink, request: ClientRequest, signal: AbortSignal, instructions?: string): Promise<ChatMessage[]> => {
+  sessionId: string, emit: SessionUpdateSink, request: ClientRequest, signal: AbortSignal, instructions?: string): Promise<ToolLoopResult> => {
   const working = [...history];
   const original = history.findLast((message) => message.role === "user")?.content ?? "";
   const observations: ChatMessage[] = [];
@@ -48,11 +49,16 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
   let succeeded = false;
   let followUps: number | undefined;
   const failed = () => { followUps ??= LOOP_CONFIG.followUpAttempts; };
-  const finalMessages = (hint = ""): ChatMessage[] => [
-    { role: "system", content: [instructions, observations.length ? LOOP_CONFIG.final : LOOP_CONFIG.conversationFinal, hint].filter(Boolean).join("\n") },
-    ...trimHistory([...history.slice(0, -1), ...observations], AGENT_CONFIG.historyCharBudget),
-    { role: "user", content: original },
-  ];
+  const actions: ToolOutcome[] = [];
+  let hasRead = false;
+  const finalMessages = (hint = ""): ToolLoopResult => ({
+    ...(actions.length && !hasRead ? { reply: actions.map(actionSummary).join(" ") } : {}),
+    messages: [
+      { role: "system", content: [instructions, observations.length ? LOOP_CONFIG.final : LOOP_CONFIG.conversationFinal, actions.length ? LOOP_CONFIG.actionFinal + actions.map(actionSummary).join(" ") : "", hint].filter(Boolean).join("\n") },
+      ...trimHistory([...history.slice(0, -1), ...observations], AGENT_CONFIG.historyCharBudget),
+      { role: "user", content: original },
+    ],
+  });
   const catalogue = toolCatalogue(tools);
   const available = tools.filter((tool) => catalogue.split("\n").some((line) => line === tool.name || line.startsWith(`${tool.name}:`)));
   const messages = (system: string): ChatMessage[] => [
@@ -77,7 +83,7 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
       if (name === TOOL_CONFIG.reply) return finalMessages();
       const tool = available.find((candidate) => candidate.name === name);
       if (!tool) continue;
-      const argsPrompt = LOOP_CONFIG.args + TOOL_CONFIG.args + tool.name + "\n" + tool.description;
+      const argsPrompt = LOOP_CONFIG.args + toolArgsGuidance(tool);
       let raw: unknown;
       try { raw = await fm.complete(messages(argsPrompt), sanitizeSchema(tool.schema), signal); }
       catch (error) {
@@ -108,21 +114,29 @@ export const runToolLoop = async (fm: Pick<FmServer, "complete">, tools: Tool[],
         }
         signal.throwIfAborted();
         output = await tool.run(args, signal);
+        if (commandFailed(name, output)) status = "failed";
       } catch (error) { status = "failed"; output = String(error); }
       emit(sessionId, { sessionUpdate: "tool_call_update", toolCallId, status,
         content: [{ type: "content", content: { type: "text", text: truncateResult(output) } }], rawOutput: output });
       signal.throwIfAborted();
+      if (isActionTool(tool)) actions.push({ name, args, succeeded: status === "completed" });
+      else hasRead = true;
       if (status === "failed") failed();
       else succeeded = true;
       const text = truncateResult(output);
       const fence = "`".repeat(Math.max(3, ...Array.from(text.matchAll(/`+/g), (match) => match[0].length + 1)));
       const result = name === LOOP_CONFIG.readTool && status === "completed"
         ? `${String(args.path)}\n${fence}text\n${text}\n${fence}` : text;
-      observations.push({ role: "user", content: `${status === "completed" ? LOOP_CONFIG.successful : LOOP_CONFIG.failed}: ${name} ${JSON.stringify(args)}\n${result}` });
+      observations.push({ role: "user", content: isActionTool(tool)
+        ? actionSummary({ name, args, succeeded: status === "completed" })
+        : `${status === "completed" ? LOOP_CONFIG.successful : LOOP_CONFIG.failed}: ${name} ${JSON.stringify(args)}\n${result}` });
       working.push({ role: "assistant", content: `${TOOL_CONFIG.callMarker} ${name} ${JSON.stringify(args)}` },
         { role: "user", content: `${TOOL_CONFIG.resultMarker} ${status === "completed" ? LOOP_CONFIG.successful : LOOP_CONFIG.failed}: ${name}\n${result}` });
     } catch (error) {
       signal.throwIfAborted();
+      const attempted = available.find((tool) => tool.name === name);
+      if (attempted && isActionTool(attempted)) actions.push({ name, args: {}, succeeded: false });
+      else hasRead = true;
       failed();
       observations.push({ role: "user", content: `${LOOP_CONFIG.failed}: ${name}\n${truncateResult(String(error))}` });
       working.push({ role: "user", content: `${TOOL_CONFIG.errorMarker} ${name}\n${truncateResult(String(error))}` });

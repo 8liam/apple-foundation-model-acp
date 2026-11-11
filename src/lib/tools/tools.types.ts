@@ -11,3 +11,5 @@ export type Tool = {
 export type ClientCapabilities = z.infer<typeof clientCapabilitiesSchema>;
 
 export type ReadOptions = { line?: number; limit?: number };
+
+export type ToolOutcome = { name: string; args: Record<string, unknown>; succeeded: boolean };
