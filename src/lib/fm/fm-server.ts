@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { type IncomingMessage, request } from "node:http";
@@ -40,6 +41,24 @@ export class FmServer {
   stop(): void {
     this.#child.kill();
     rmSync(this.#dir, { recursive: true, force: true });
+  }
+
+  async complete(messages: ChatMessage[], schema: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    const body = JSON.stringify({ model: FM_CONFIG.model, stream: false, messages,
+      response_format: { type: "json_schema", json_schema: { name: "action", strict: true, schema } } });
+    const response = await this.#send("POST", FM_CONFIG.chatPath, body, signal);
+    if (response.statusCode !== 200) throw new Error(FM_ERRORS.httpStatus(response.statusCode ?? 0, await collect(response)));
+    let content = "";
+    if (response.headers["content-type"]?.includes("text/event-stream")) {
+      for await (const event of readChatStream(response)) {
+        if (event.type === "error") throw new Error(event.message);
+        if (event.type === "delta") content += event.text;
+      }
+    } else {
+      const parsed = z.object({ choices: z.array(z.object({ message: z.object({ content: z.string() }) })) }).parse(JSON.parse(await collect(response)));
+      content = parsed.choices[0]?.message.content ?? "";
+    }
+    return JSON.parse(content) as unknown;
   }
 
   async *chat(messages: ChatMessage[], signal: AbortSignal): AsyncGenerator<ChatStreamEvent> {

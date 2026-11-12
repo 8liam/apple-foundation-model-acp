@@ -1,3 +1,7 @@
+import { connectMcpTools } from "../mcp/mcp-client.ts";
+import { builtinTools } from "../tools/tool-registry.ts";
+import type { ClientCapabilities, ClientRequest } from "../tools/tools.types.ts";
+import { runToolLoop } from "./agent-loop.ts";
 import { randomUUID } from "node:crypto";
 import type { z } from "zod";
 import {
@@ -26,12 +30,15 @@ import { contentBlocksToText } from "./prompt-text.ts";
 
 /** ACP agent that answers prompts with Apple's on-device Foundation Model. */
 export class FmAgent {
-  readonly #fm: Pick<FmServer, "chat">;
+  readonly #fm: Pick<FmServer, "chat"> & Partial<Pick<FmServer, "complete">>;
+  #capabilities: ClientCapabilities = {};
+  readonly #request: ClientRequest;
   readonly #emit: SessionUpdateSink;
   readonly #instructions: string | undefined;
   readonly #sessions = new Map<string, Session>();
 
-  constructor(fm: Pick<FmServer, "chat">, emit: SessionUpdateSink, instructions?: string) {
+  constructor(fm: Pick<FmServer, "chat"> & Partial<Pick<FmServer, "complete">>, emit: SessionUpdateSink, instructions?: string, request: ClientRequest = async () => { throw new Error(JSONRPC_MESSAGES.methodNotFound); }) {
+    this.#request = request;
     this.#fm = fm;
     this.#emit = emit;
     this.#instructions = instructions;
@@ -43,8 +50,7 @@ export class FmAgent {
         case ACP_METHODS.initialize:
           return this.#initialize(parse(method, initializeParamsSchema, params));
         case ACP_METHODS.sessionNew:
-          parse(method, newSessionParamsSchema, params);
-          return this.#newSession();
+          return this.#newSession(parse(method, newSessionParamsSchema, params));
         case ACP_METHODS.sessionPrompt:
           return this.#prompt(parse(method, promptParamsSchema, params));
         default:
@@ -58,7 +64,8 @@ export class FmAgent {
     },
   };
 
-  #initialize(_params: z.infer<typeof initializeParamsSchema>) {
+  #initialize(params: z.infer<typeof initializeParamsSchema>) {
+    this.#capabilities = params.clientCapabilities ?? {};
     return {
       protocolVersion: ACP_PROTOCOL_VERSION,
       agentCapabilities: AGENT_CAPABILITIES,
@@ -67,9 +74,16 @@ export class FmAgent {
     };
   }
 
-  #newSession() {
+  async close(): Promise<void> {
+    for (const session of this.#sessions.values()) session.abort?.abort();
+    await Promise.allSettled([...this.#sessions.values()].map((session) => session.close()));
+    this.#sessions.clear();
+  }
+
+  async #newSession(params: z.infer<typeof newSessionParamsSchema>) {
     const id = `${AGENT_CONFIG.sessionIdPrefix}${randomUUID()}`;
-    this.#sessions.set(id, { id, history: [], abort: null });
+    const mcp = await connectMcpTools(params.mcpServers, params.cwd);
+    this.#sessions.set(id, { id, history: [], abort: null, tools: [...builtinTools(id, params.cwd, this.#capabilities, this.#request), ...mcp.tools], close: mcp.close });
     return { sessionId: id };
   }
 
@@ -87,7 +101,7 @@ export class FmAgent {
     const abort = new AbortController();
     session.abort = abort;
 
-    const messages: ChatMessage[] = [
+    let messages: ChatMessage[] = [
       ...(this.#instructions ? [{ role: "system" as const, content: this.#instructions }] : []),
       ...trimHistory(session.history, AGENT_CONFIG.historyCharBudget),
     ];
@@ -95,10 +109,19 @@ export class FmAgent {
     let reply = "";
     let stopReason: StopReason = ACP_STOP_REASONS.endTurn;
     try {
-      for await (const event of this.#fm.chat(messages, abort.signal)) {
+      if (session.tools.length && this.#fm.complete) {
+        const result = await runToolLoop({ complete: this.#fm.complete.bind(this.#fm) }, session.tools, trimHistory(session.history, AGENT_CONFIG.historyCharBudget),
+          session.id, this.#emit, this.#request, abort.signal, this.#instructions);
+        messages = result.messages;
+        if (result.reply !== undefined) {
+          reply = result.reply;
+          this.#emit(session.id, { sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk, content: { type: "text", text: reply } });
+        }
+      }
+      if (!reply) for await (const event of this.#fm.chat(messages, abort.signal)) {
         if (event.type === "delta") {
           reply += event.text;
-          this.#emit(session.id, event.text);
+          this.#emit(session.id, { sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk, content: { type: "text", text: event.text } });
         } else if (event.type === "finish") {
           if (event.reason === "length") stopReason = ACP_STOP_REASONS.maxTokens;
           if (event.reason === "content_filter") stopReason = ACP_STOP_REASONS.refusal;
@@ -131,11 +154,3 @@ const parse = <S extends z.ZodType>(method: string, schema: S, params: unknown):
   }
   return result.data;
 };
-
-export const sessionUpdateParams = (sessionId: string, text: string) => ({
-  sessionId,
-  update: {
-    sessionUpdate: ACP_UPDATE_KINDS.agentMessageChunk,
-    content: { type: "text", text },
-  },
-});
